@@ -1,6 +1,8 @@
+#!/usr/bin/env node
+
 const minimist = require("minimist");
-const { makeRequest } = require("./httpClient");
-const { searchWithPuppeteer } = require("./puppeteerClient");
+const { makeRequest } = require("./src/httpClient");
+const { searchWithPuppeteer } = require("./src/puppeteerClient");
 
 const args = minimist(process.argv.slice(2));
 
