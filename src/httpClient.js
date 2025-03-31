@@ -32,7 +32,7 @@ const makeRequest = (targetUrl) => {
 
     const req = https.request(options, (res) => {
       console.log(`STATUS: ${res.statusCode}`);
-      console.log(`HEADERS: ${JSON.stringify(res.headers, null, 2)}`);
+      // console.log(`HEADERS: ${JSON.stringify(res.headers, null, 2)}`);
 
       let response = [];
 
