@@ -43,10 +43,6 @@ const makeRequest = (targetUrl) => {
       res.on("end", () => {
         const buffer = Buffer.concat(response);
 
-        // console.log("\n=== RAW RESPONSE ===\n");
-        // console.log(buffer.toString());
-        // console.log("\n===================\n");
-
         if (buffer.length === 0) {
           reject("Empty response from server.");
           return;

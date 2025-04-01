@@ -9,7 +9,6 @@ const searchWithPuppeteer = async (query) => {
       "--disable-blink-features=AutomationControlled",
     ],
   });
-
   const page = await browser.newPage();
 
   // Устанавливаем User-Agent для имитации реального браузера
@@ -30,11 +29,15 @@ const searchWithPuppeteer = async (query) => {
   // Парсим результаты
   const results = await page.evaluate(() => {
     const items = [];
+
     document.querySelectorAll(".result__title a").forEach((el) => {
-      items.push({
-        title: el.innerText,
-        link: el.href,
-      });
+      if (items.length < 10) {
+        const title = el.textContent.trim();
+        const link = el.href;
+        if (title && link) {
+          items.push({ title, link });
+        }
+      }
     });
     return items;
   });
