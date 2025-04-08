@@ -48,7 +48,10 @@ const main = async () => {
         console.log(cached);
       } else {
         console.log(`Fetching URL: ${args.u}`);
-        const response = await makeRequest(args.u);
+
+const response = await makeRequest(args.u);
+
+
         fs.writeFileSync(cacheFile, response);
         console.log("\nResponse:\n");
         console.log(response);
