@@ -1,135 +1,132 @@
-const https = require("https");
-const zlib = require("zlib");
-const url = require("url");
+// src/httpClient.js
+const net = require("net");
+const tls = require("tls");
 const { JSDOM } = require("jsdom");
+const { URL } = require("url");
 
-const makeRequest = (targetUrl) => {
-  return new Promise((resolve, reject) => {
-    const parsedUrl = new url.URL(targetUrl);
+function parseHeaders(raw) {
+  const lines = raw.split("\r\n");
+  const headers = {};
+  for (let i = 1; i < lines.length; i++) {
+    const [key, ...rest] = lines[i].split(":");
+    headers[key.toLowerCase()] = rest.join(":").trim();
+  }
+  return headers;
+}
 
-    console.log(`Making request to: ${targetUrl}`);
-    console.log(
-      `Host: ${parsedUrl.hostname}, Path: ${parsedUrl.pathname}, Port: ${
-        parsedUrl.port || 443
-      }`
-    );
+// 
+function decompressBody(buffer, encoding) {
+  return Promise.resolve(buffer.toString());
+}
 
-    const options = {
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port || 443,
-      path: parsedUrl.pathname + (parsedUrl.search || ""),
-      method: "GET",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "en-US,en;q=0.9",
-        Connection: "keep-alive",
-      },
-    };
 
-    const req = https.request(options, (res) => {
-      console.log(`STATUS: ${res.statusCode}`);
-      // console.log(`HEADERS: ${JSON.stringify(res.headers, null, 2)}`);
+async function makeRequest(initialUrl, maxRedirects = 5) {
+  let currentUrl = new URL(initialUrl);
+  let redirects = 0;
 
-      let response = [];
+  while (redirects < maxRedirects) {
+    const isHttps = currentUrl.protocol === "https:";
+    const port = isHttps ? 443 : 80;
 
-      res.on("data", (chunk) => {
-        response.push(chunk);
+    const response = await new Promise((resolve, reject) => {
+      const client = isHttps
+        ? tls.connect(port, currentUrl.hostname, { servername: currentUrl.hostname }, onConnect)
+        : net.connect(port, currentUrl.hostname, onConnect);
+
+      function onConnect() {
+        const request = `GET ${currentUrl.pathname + currentUrl.search} HTTP/1.1\r\n` +
+                        `Host: ${currentUrl.hostname}\r\n` +
+                        `User-Agent: CustomClient/1.0\r\n` +
+                        `Accept: text/html, application/json;q=0.9, */*;q=0.8\r\n` +
+                        `Accept-Encoding: identity\r\n` +
+                        `Connection: close\r\n\r\n`;
+        client.write(request);
+      }
+
+      let rawData = [];
+
+      client.on("data", (chunk) => {
+        rawData.push(chunk);
       });
 
-      res.on("end", () => {
-        const buffer = Buffer.concat(response);
+      client.on("end", () => {
+        const buffer = Buffer.concat(rawData);
+        const rawText = buffer.toString("latin1");
+        const [headerPart] = rawText.split("\r\n\r\n");
+        const bodyStart = buffer.indexOf("\r\n\r\n") + 4;
+        const bodyBuffer = buffer.slice(bodyStart);
 
-        if (buffer.length === 0) {
-          reject("Empty response from server.");
-          return;
-        }
+        const headers = parseHeaders(headerPart);
+        const statusLine = headerPart.split("\r\n")[0];
+        const statusMatch = statusLine.match(/^HTTP\/1\.\d\s+(\d+)/);
+        const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
 
-        // Определяем Content-Type
-        const contentType = res.headers["content-type"];
-        console.log(`Content-Type: ${contentType}`);
+        const encoding = headers["content-encoding"] || "";
+        const contentType = headers["content-type"] || "";
 
-        // Определяем метод сжатия
-        const encoding = res.headers["content-encoding"];
-        console.log(`Encoding: ${encoding}`);
 
-        const handleDecodedResponse = (decoded) => {
-          if (contentType.includes("application/json")) {
-            try {
-              const json = JSON.parse(decoded);
-              console.log("\n=== PARSED JSON ===\n");
-              console.log(JSON.stringify(json, null, 2));
-              console.log("\n===================\n");
-              resolve(json);
-            } catch (err) {
-              reject(`Error parsing JSON: ${err.message}`);
+        decompressBody(bodyBuffer, encoding)
+          .then((decodedBody) => {
+           
+            if (contentType.includes("application/json")) { 
+              try {
+
+                const json = JSON.parse(decodedBody);
+                resolve({ statusCode, headers, body: JSON.stringify(json, null, 2) });
+
+              } catch (e) {
+                resolve({ statusCode, headers, body: decodedBody });
+
+              }
+            } else if (contentType.includes("text/html")) {
+              try {
+                const dom = new JSDOM(decodedBody);
+                const unwanted = dom.window.document.querySelectorAll("script, style, meta, link, iframe, noscript");
+                unwanted.forEach((el) => el.remove());
+
+                let text = dom.window.document.body.textContent || "";
+                text = text
+                  .replace(/\s+/g, " ")
+                  .replace(/^\s+|\s+$/g, "")
+                  .replace(/([.!?])\s*(?=[A-ZА-Я])/g, "$1\n\n")
+                  .replace(/(?<!\n)\s*-\s*/g, "\n- ")
+                  .replace(/(\d+\.)\s*/g, "\n$1 ")
+                  .replace(/\n{2,}/g, "\n\n");
+
+                resolve({ statusCode, headers, body: text });
+              } catch (err) {
+                resolve({ statusCode, headers, body: decodedBody });
+              }
+            } else {
+              resolve({ statusCode, headers, body: decodedBody });
             }
-          } else if (contentType.includes("text/html")) {
-            try {
-              const dom = new JSDOM(decoded);
+          })
+          .catch((err) => reject(err));
 
-              // Убираем теги <script>, <style>, <meta> и т.д.
-              const unwantedTags = dom.window.document.querySelectorAll(
-                "script, style, meta, link, iframe, noscript"
-              );
-              unwantedTags.forEach((tag) => tag.remove());
 
-              let textContent = dom.window.document.body.textContent;
+      });
 
-              // Убираем лишние пробелы и переносы строк
-              textContent = textContent
-                .replace(/\s+/g, " ") // Убираем лишние пробелы
-                .replace(/^\s+|\s+$/g, "") // Убираем пробелы в начале и конце строки
-                .replace(/([.!?])\s*(?=[A-ZА-Я])/g, "$1\n\n") // Добавляем перенос строки после точек и восклицательных знаков
-                .replace(/(?<!\n)\s*-\s*/g, "\n- ") // Добавляем перенос строки перед пунктами списка
-                .replace(/(\d+\.)\s*/g, "\n$1 ") // Добавляем перенос строки перед нумерацией
-                .replace(/\n{2,}/g, "\n\n"); // Убираем двойные переносы строк
-
-              resolve(textContent);
-            } catch (err) {
-              reject(`Error parsing HTML: ${err.message}`);
-            }
-          } else {
-            console.log("\n=== RAW TEXT ===\n");
-            console.log(decoded);
-            console.log("\n===================\n");
-            resolve(decoded);
-          }
-        };
-
-        if (encoding === "gzip") {
-          console.log("Decompressing GZIP...");
-          zlib.gunzip(buffer, (err, decoded) => {
-            if (err) reject(`Error decoding gzip: ${err.message}`);
-            else handleDecodedResponse(decoded.toString());
-          });
-        } else if (encoding === "deflate") {
-          console.log("Decompressing DEFLATE...");
-          zlib.inflate(buffer, (err, decoded) => {
-            if (err) reject(`Error decoding deflate: ${err.message}`);
-            else handleDecodedResponse(decoded.toString());
-          });
-        } else if (encoding === "br") {
-          console.log("Decompressing Brotli...");
-          zlib.brotliDecompress(buffer, (err, decoded) => {
-            if (err) reject(`Error decoding brotli: ${err.message}`);
-            else handleDecodedResponse(decoded.toString());
-          });
-        } else {
-          handleDecodedResponse(buffer.toString());
-        }
+      client.on("error", (err) => {
+        reject(`Connection error: ${err.message}`);
       });
     });
 
-    req.on("error", (err) => {
-      reject(`Request failed: ${err.message}`);
-    });
+    if (response.statusCode >= 300 && response.statusCode < 400) {
+      const location = response.headers["location"];
+      if (!location) {
+        throw new Error("Redirect response without Location header.");
+      }
+      console.log(`Redirect ${redirects + 1}: ${location}`);
+      currentUrl = new URL(location, currentUrl);
+      redirects++;
+    } else {
+      return response.body;
+    }
+  }
 
-    req.end();
-  });
+  throw new Error("Too many redirects.");
+}
+
+module.exports = {
+  makeRequest
 };
-
-module.exports = { makeRequest };
